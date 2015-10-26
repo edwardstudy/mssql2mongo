@@ -2,7 +2,6 @@ var ConnectionPool = require('tedious-connection-pool');
 var Request = require('tedious').Request;
 var mongoose = require('mongoose');
 
-var util = require('./util.js');
 var config = require('./config.js').config;
 var type_mapping = require('./type_mapping.js');
 
@@ -13,15 +12,20 @@ var counter = 1;
 
 mongoose.connect(config.mongodb);
 
+var mongoCollection = 'dbo.aaaaaabbbbbb';
 
 pool.acquire(function(err, connection){
   if(err){
     console.error('POOL CONNECTION ERROR：' + err);
   }
-  var m_schema, schema = {}, Model;
+  //type map schema
+  var typeSchema = {};
   
-  //发出T-SQL
-  var request = new Request("SELECT * FROM cdc.fn_cdc_get_all_changes_dbo_aaaaaabbbbbb(sys.fn_cdc_get_min_lsn('dbo_aaaaaabbbbbb'), sys.fn_cdc_get_max_lsn(), N'all')", function(err, rowCount){
+  //mongoose schem and amodel
+  var m_schema, Model;
+  
+  //send T-SQL request
+  var request = new Request("SELECT * FROM cdc.dbo_aaaaaabbbbbb_CT", function(err, rowCount){
     if(err){
       console.error('REQUEST INIT ERROR：' + err);
     }
@@ -31,24 +35,41 @@ pool.acquire(function(err, connection){
     connection.release();
   });
   
-  request.on("columnMetadata", function (columns) {
-    console.log(columns);
-      columns.forEach(function (item) {
-          schema[item.colName] = type_mapping[item.type.name];
-      });
-
-      m_schema = new Schema(schema);
-
-      if (mongoose.modelNames().indexOf(rule.mongodb_table) === -1) {
-          Model = mongoose.model(rule.mongodb_table, m_schema);
-      } else {
-          Model = mongoose.model(rule.mongodb_table);
+  //fetch metadata to create mongoose model
+  request.on("columnMetadata", function (columns){
+    columns.forEach(function (item) {
+      if(item.colName.indexOf('__$') === -1){
+          typeSchema[item.colName] = type_mapping[item.type.name];         
       }
+
+    });
+
+    m_schema = new Schema(typeSchema);
+
+    if(mongoose.modelNames().indexOf(mongoCollection) === -1){
+      Model = mongoose.model(mongoCollection, m_schema);
+    }else{
+      Model = mongoose.model(mongoCollection);
+    }
 
   });
   
   request.on('row', function(columns){
-    console.log('REQUEST LISTEN ROW DATA: ' + columns);
+    var model = new Model();
+
+    columns.forEach(function (column){
+      if(typeSchema.hasOwnProperty(column.metadata.colName)){
+        model[column.metadata.colName] = column.value;
+      }
+    });
+
+    model.save(function (err){
+      if(err){
+        console.log(err);
+      }else{
+        console.log(counter++);
+      }
+    });    
   });
   
   connection.execSql(request);
@@ -58,59 +79,3 @@ pool.acquire(function(err, connection){
 pool.on('error', function(err){
   console.log('POOL RUN ERROR: ' + err);
 });
-// config.rules.forEach(function (rule) {
-//     pool.requestConnection(function (err, connection) {
-//         if (!err) {
-//             var query = util.build_cbc_query(rule);
-//             var m_schema, schema = {}, Model;
-            
-//             request = new Request(query, function (err, rowCount) {
-//                 connection.close();
-//                 if (err) {
-//                     console.log(err);
-//                 } else {
-//                     console.log(rowCount + ' rows');
-//                 }
-//             });
-
-//             request.on("columnMetadata", function (columns) {
-//               console.log(columns);
-//                 // columns.forEach(function (item) {
-//                 //     schema[item.colName] = type_mapping[item.type.name];
-//                 // });
-
-//                 // m_schema = new Schema(schema);
-
-//                 // if (mongoose.modelNames().indexOf(rule.mongodb_table) === -1) {
-//                 //     Model = mongoose.model(rule.mongodb_table, m_schema);
-//                 // } else {
-//                 //     Model = mongoose.model(rule.mongodb_table);
-//                 // }
-
-//             });
-
-//             request.on('row', function (columns) {
-//               console.log(columns);
-//                 // var model = new Model();
-
-//                 // columns.forEach(function (column) {
-//                 //     if (schema.hasOwnProperty(column.metadata.colName)) {
-//                 //         model[column.metadata.colName] = column.value;
-//                 //     }
-//                 // });
-
-//                 // model.save(function (err) {
-//                 //     if (err) {
-//                 //         console.log(err)
-//                 //     } else {
-//                 //         console.log(counter++);
-//                 //     }
-//                 // });
-//             });
-
-//             connection.on('connect', function (err) {
-//                 connection.execSql(request);
-//             })
-//         }
-//     });
-// });
